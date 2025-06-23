@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Npower Jita 2B Team 4</title>
+    <title>Privacy & Security Checker - Cover Your Tracks</title>
     <style>
         * {
             margin: 0;
@@ -364,6 +364,10 @@
                     <div id="protectionAnalysis"></div>
                 </div>
 
+                <div class="result-section">
+                    <h3>📍 Location & Network Security</h3>
+                    <div id="locationData"></div>
+                </div>
                 <div class="result-section recommendations">
                     <h3>💡 Recommendations</h3>
                     <div id="recommendations"></div>
@@ -416,7 +420,8 @@
                 { name: 'Audio Fingerprint', fn: collectAudioFingerprint, weight: 10 },
                 { name: 'Font Detection', fn: detectFonts, weight: 10 },
                 { name: 'Plugin Information', fn: collectPluginInfo, weight: 5 },
-                { name: 'Network Information', fn: collectNetworkInfo, weight: 10 }
+                { name: 'Network Information', fn: collectNetworkInfo, weight: 5 },
+                { name: 'Privacy Features', fn: detectPrivacyFeatures, weight: 5 }
             ];
 
             let progress = 0;
@@ -429,6 +434,54 @@
                 progress += test.weight;
                 progressFill.style.width = `${progress}%`;
                 await new Promise(resolve => setTimeout(resolve, 200));
+            }
+        }
+        
+        async function detectPrivacyFeatures() {
+            // Detect Brave
+            try {
+                if (navigator.brave && await navigator.brave.isBrave()) {
+                    fingerprintData.browser = 'Brave';
+                    fingerprintData.braveDetected = true;
+                }
+            } catch (e) {
+                fingerprintData.braveDetected = false;
+            }
+            
+            // Detect ad blocking
+            fingerprintData.adBlockDetected = await checkAdBlock();
+            
+            // Detect privacy-focused user agents
+            const ua = navigator.userAgent.toLowerCase();
+            fingerprintData.privacyBrowser = ua.includes('brave') || 
+                                           ua.includes('duckduckgo') || 
+                                           ua.includes('tor');
+            
+            // Check for privacy extensions indicators
+            fingerprintData.privacyIndicators = {
+                reducedTimerPrecision: checkTimerPrecision(),
+                noPlugins: !navigator.plugins || navigator.plugins.length === 0,
+                batteryAPIBlocked: !navigator.getBattery,
+                webglMetadataHidden: checkWebGLMetadata()
+            };
+        }
+        
+        function checkWebGLMetadata() {
+            try {
+                const canvas = document.createElement('canvas');
+                const gl = canvas.getContext('webgl');
+                if (!gl) return true; // WebGL blocked
+                
+                const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+                if (!debugInfo) return true; // Debug info blocked
+                
+                const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+                const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+                
+                // Check if values are generic/spoofed
+                return vendor === 'Google Inc.' && renderer === 'ANGLE';
+            } catch (e) {
+                return true;
             }
         }
 
@@ -580,9 +633,35 @@
                 fingerprintData.warning = 'Running on localhost - some tests may be inaccurate';
             } else {
                 try {
-                    const response = await fetch('https://httpbin.org/ip');
-                    const data = await response.json();
-                    fingerprintData.publicIP = data.origin;
+                    // Get public IP and location info
+                    const ipResponse = await fetch('https://httpbin.org/ip');
+                    const ipData = await ipResponse.json();
+                    fingerprintData.publicIP = ipData.origin;
+                    
+                    // Get detailed IP info including VPN detection
+                    try {
+                        const ipInfoResponse = await fetch(`https://ipapi.co/${ipData.origin}/json/`);
+                        const ipInfo = await ipInfoResponse.json();
+                        
+                        fingerprintData.ipInfo = {
+                            country: ipInfo.country_name || 'Unknown',
+                            city: ipInfo.city || 'Unknown',
+                            org: ipInfo.org || 'Unknown',
+                            asn: ipInfo.asn || 'Unknown',
+                            timezone: ipInfo.timezone || 'Unknown'
+                        };
+                        
+                        // VPN detection based on multiple factors
+                        fingerprintData.vpnDetection = detectVPN(ipInfo);
+                        
+                    } catch (e) {
+                        console.error('IP info fetch failed:', e);
+                        fingerprintData.ipInfo = { error: 'Unable to fetch detailed info' };
+                    }
+                    
+                    // Additional VPN detection using timezone mismatch
+                    fingerprintData.timezoneMismatch = checkTimezoneMismatch();
+                    
                 } catch (e) {
                     fingerprintData.publicIP = 'unable to detect';
                 }
@@ -601,9 +680,69 @@
             }
         }
         
+        function detectVPN(ipInfo) {
+            const vpnIndicators = {
+                hosting: false,
+                vpnKeywords: false,
+                datacenter: false,
+                residentialMismatch: false
+            };
+            
+            // Check if ISP/org contains VPN-related keywords
+            const org = (ipInfo.org || '').toLowerCase();
+            const vpnKeywords = ['vpn', 'proxy', 'hosting', 'datacenter', 'cloud', 'server', 
+                                'digital ocean', 'amazon', 'google cloud', 'microsoft azure', 
+                                'ovh', 'hetzner', 'linode', 'vultr'];
+            
+            vpnIndicators.vpnKeywords = vpnKeywords.some(keyword => org.includes(keyword));
+            
+            // Check for datacenter ASNs (common VPN providers)
+            const datacenterASNs = ['AS13335', 'AS16276', 'AS14061', 'AS8075', 'AS16509', 
+                                   'AS15169', 'AS8068', 'AS45090', 'AS20473'];
+            vpnIndicators.datacenter = datacenterASNs.includes(ipInfo.asn);
+            
+            // Check if it's a hosting provider
+            vpnIndicators.hosting = org.includes('hosting') || org.includes('datacenter') || 
+                                   org.includes('cloud');
+            
+            // Calculate VPN probability
+            const indicatorCount = Object.values(vpnIndicators).filter(Boolean).length;
+            
+            return {
+                indicators: vpnIndicators,
+                detected: indicatorCount >= 2,
+                probability: indicatorCount >= 3 ? 'High' : indicatorCount >= 2 ? 'Medium' : 'Low',
+                org: ipInfo.org,
+                country: ipInfo.country_name
+            };
+        }
+        
+        function checkTimezoneMismatch() {
+            // Compare browser timezone with IP-based timezone
+            const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const ipTimezone = fingerprintData.ipInfo?.timezone;
+            
+            if (!ipTimezone || ipTimezone === 'Unknown') {
+                return { checked: false };
+            }
+            
+            // Check if timezones are significantly different
+            const mismatch = browserTimezone !== ipTimezone;
+            
+            return {
+                checked: true,
+                mismatch: mismatch,
+                browserTimezone: browserTimezone,
+                ipTimezone: ipTimezone
+            };
+        }
+        
         async function detectWebRTCLeak() {
             return new Promise((resolve) => {
                 const ips = new Set();
+                const privateIPs = new Set();
+                const publicIPs = new Set();
+                
                 const pc = new RTCPeerConnection({
                     iceServers: [{urls: 'stun:stun.l.google.com:19302'}]
                 });
@@ -613,7 +752,16 @@
                 
                 pc.onicecandidate = (event) => {
                     if (!event.candidate) {
-                        fingerprintData.webrtcIPs = Array.from(ips).join(', ') || 'none detected';
+                        const allIPs = Array.from(ips);
+                        fingerprintData.webrtcIPs = allIPs.length > 0 ? allIPs.join(', ') : 'none detected';
+                        fingerprintData.webrtcPrivateIPs = Array.from(privateIPs);
+                        fingerprintData.webrtcPublicIPs = Array.from(publicIPs);
+                        
+                        // Check for VPN by comparing WebRTC IPs with public IP
+                        if (publicIPs.size > 0 && fingerprintData.publicIP) {
+                            fingerprintData.webrtcLeak = !Array.from(publicIPs).includes(fingerprintData.publicIP);
+                        }
+                        
                         pc.close();
                         resolve();
                         return;
@@ -622,12 +770,24 @@
                     const regex = /([0-9]{1,3}\.){3}[0-9]{1,3}/g;
                     const matches = event.candidate.candidate.match(regex);
                     if (matches) {
-                        matches.forEach(ip => ips.add(ip));
+                        matches.forEach(ip => {
+                            ips.add(ip);
+                            // Check if IP is private
+                            if (ip.startsWith('10.') || ip.startsWith('172.') || 
+                                ip.startsWith('192.168.') || ip.startsWith('127.')) {
+                                privateIPs.add(ip);
+                            } else {
+                                publicIPs.add(ip);
+                            }
+                        });
                     }
                 };
                 
                 setTimeout(() => {
-                    fingerprintData.webrtcIPs = Array.from(ips).join(', ') || 'none detected';
+                    const allIPs = Array.from(ips);
+                    fingerprintData.webrtcIPs = allIPs.length > 0 ? allIPs.join(', ') : 'none detected';
+                    fingerprintData.webrtcPrivateIPs = Array.from(privateIPs);
+                    fingerprintData.webrtcPublicIPs = Array.from(publicIPs);
                     pc.close();
                     resolve();
                 }, 2000);
@@ -669,6 +829,13 @@
             protectionScore = 0;
             const analysis = [];
             
+            // Detect Brave Browser
+            const isBrave = navigator.brave && navigator.brave.isBrave();
+            if (isBrave) {
+                protectionScore += 30;
+                analysis.push({ name: 'Brave Browser Detected', status: 'Enhanced privacy protection', good: true });
+            }
+            
             // Check for tracking protection
             if (fingerprintData.doNotTrack === '1') {
                 protectionScore += 10;
@@ -677,28 +844,146 @@
                 analysis.push({ name: 'Do Not Track', status: 'disabled', good: false });
             }
             
-            // Check for WebRTC leak potential
-            if (RTCPeerConnection) {
-                analysis.push({ name: 'WebRTC', status: 'enabled (IP leak risk)', good: false });
+            // Check for fingerprinting resistance
+            const fpResistance = checkFingerprintingResistance();
+            if (fpResistance.resistant) {
+                protectionScore += 25;
+                analysis.push({ name: 'Fingerprinting Protection', status: fpResistance.status, good: true });
             } else {
-                protectionScore += 20;
-                analysis.push({ name: 'WebRTC', status: 'disabled', good: true });
+                analysis.push({ name: 'Fingerprinting Protection', status: 'not detected', good: false });
             }
             
-            // Check for canvas fingerprinting protection
-            if (fingerprintData.canvasHash) {
+            // Check for WebRTC protection
+            if (fingerprintData.webrtcIPs === 'none detected' || !fingerprintData.webrtcIPs) {
+                protectionScore += 20;
+                analysis.push({ name: 'WebRTC IP Protection', status: 'IPs hidden', good: true });
+            } else if (fingerprintData.webrtcIPs.includes('local')) {
+                protectionScore += 10;
+                analysis.push({ name: 'WebRTC IP Protection', status: 'partial (local IPs only)', good: true });
+            } else {
+                analysis.push({ name: 'WebRTC IP Protection', status: 'IPs exposed', good: false });
+            }
+            
+            // Check for canvas fingerprinting randomization
+            const canvasProtection = checkCanvasProtection();
+            if (canvasProtection) {
+                protectionScore += 20;
+                analysis.push({ name: 'Canvas Fingerprinting', status: 'randomized/blocked', good: true });
+            } else {
                 analysis.push({ name: 'Canvas Fingerprinting', status: 'not blocked', good: false });
             }
             
-            // Check cookie settings
-            if (!navigator.cookieEnabled) {
+            // Check for third-party cookie blocking
+            const thirdPartyCookies = checkThirdPartyCookieBlocking();
+            if (thirdPartyCookies) {
                 protectionScore += 15;
-                analysis.push({ name: 'Cookies', status: 'disabled', good: true });
+                analysis.push({ name: 'Third-party Cookies', status: 'blocked', good: true });
             } else {
-                analysis.push({ name: 'Cookies', status: 'enabled', good: false });
+                analysis.push({ name: 'Third-party Cookies', status: 'allowed', good: false });
+            }
+            
+            // Check for VPN usage
+            if (fingerprintData.vpnDetection?.detected) {
+                protectionScore += 25;
+                analysis.push({ name: 'VPN/Proxy Detected', status: `Active (${fingerprintData.vpnDetection.probability} probability)`, good: true });
+            } else {
+                analysis.push({ name: 'VPN/Proxy', status: 'Not detected', good: false });
+            }
+            
+            // Check for timezone mismatch (another VPN indicator)
+            if (fingerprintData.timezoneMismatch?.mismatch) {
+                protectionScore += 10;
+                analysis.push({ name: 'Location Privacy', status: 'Timezone mismatch detected (VPN likely)', good: true });
+            }
+            
+            // Check for WebRTC leak while using VPN
+            if (fingerprintData.webrtcLeak && fingerprintData.vpnDetection?.detected) {
+                protectionScore -= 15;
+                analysis.push({ name: 'WebRTC Leak', status: 'Real IP exposed despite VPN!', good: false });
+            }
+            
+            // Check hardware spoofing
+            if (fingerprintData.hardwareConcurrency === 2 || fingerprintData.hardwareConcurrency === 4) {
+                protectionScore += 10;
+                analysis.push({ name: 'Hardware Spoofing', status: 'possible spoofing detected', good: true });
             }
             
             fingerprintData.protectionAnalysis = analysis;
+        }
+        
+        function checkFingerprintingResistance() {
+            // Check for common fingerprinting resistance indicators
+            const indicators = {
+                // Timezone spoofing (UTC is common for privacy tools)
+                timezoneUTC: fingerprintData.timezoneOffset === 0,
+                // Common spoofed screen resolutions
+                commonResolution: ['1920x1080', '1366x768', '1280x720'].includes(fingerprintData.screenResolution),
+                // Reduced timer precision (privacy feature)
+                reducedTimerPrecision: checkTimerPrecision(),
+                // Limited plugin info
+                noPlugins: fingerprintData.pluginsCount === 0,
+                // Uniform color depth
+                standardColorDepth: fingerprintData.screenColorDepth === 24
+            };
+            
+            const resistanceCount = Object.values(indicators).filter(Boolean).length;
+            
+            if (resistanceCount >= 3) {
+                return { resistant: true, status: 'Strong protection detected' };
+            } else if (resistanceCount >= 2) {
+                return { resistant: true, status: 'Moderate protection detected' };
+            }
+            return { resistant: false, status: 'No protection detected' };
+        }
+        
+        function checkTimerPrecision() {
+            // Check if performance.now() has reduced precision
+            const timestamps = [];
+            for (let i = 0; i < 10; i++) {
+                timestamps.push(performance.now());
+            }
+            
+            // Check if all timestamps end in .000 or have limited decimal places
+            const limitedPrecision = timestamps.every(ts => {
+                const decimal = (ts % 1).toFixed(3);
+                return decimal === '0.000' || decimal.endsWith('00');
+            });
+            
+            return limitedPrecision;
+        }
+        
+        function checkCanvasProtection() {
+            // Create multiple canvas samples to detect randomization
+            const hashes = [];
+            for (let i = 0; i < 3; i++) {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                ctx.fillText('test', 2, 2);
+                hashes.push(canvas.toDataURL());
+            }
+            
+            // If hashes are different, canvas is being randomized
+            const uniqueHashes = new Set(hashes);
+            return uniqueHashes.size > 1;
+        }
+        
+        function checkThirdPartyCookieBlocking() {
+            // This is a simplified check - in reality, you'd need to test with actual third-party requests
+            try {
+                // Check if storage access API is available (indicates privacy features)
+                if (document.hasStorageAccess) {
+                    return true;
+                }
+                
+                // Check for strict cookie settings
+                if (navigator.cookieEnabled === false) {
+                    return true;
+                }
+                
+                return false;
+            } catch (e) {
+                return false;
+            }
         }
 
         function displayResults() {
@@ -778,6 +1063,58 @@
                     <span class="bits" style="background: ${item.good ? '#27ae60' : '#e74c3c'}">${item.good ? 'Good' : 'Risk'}</span>
                 </div>
             `).join('');
+            
+            // Display location and network data
+            const locationData = document.getElementById('locationData');
+            const vpnStatus = fingerprintData.vpnDetection?.detected ? 
+                `VPN/Proxy Active (${fingerprintData.vpnDetection.probability} probability)` : 
+                'No VPN/Proxy detected';
+            
+            const vpnStatusColor = fingerprintData.vpnDetection?.detected ? 'safe' : 'warning';
+            
+            locationData.innerHTML = `
+                <div class="fingerprint-item">
+                    <span class="name">Public IP Address</span>
+                    <span class="value">${fingerprintData.publicIP}</span>
+                    <span class="bits" style="background: #e74c3c">Exposed</span>
+                </div>
+                <div class="fingerprint-item">
+                    <span class="name">VPN/Proxy Status</span>
+                    <span class="value">${vpnStatus}</span>
+                    <span class="bits" style="background: ${vpnStatusColor === 'safe' ? '#27ae60' : '#e74c3c'}">${vpnStatusColor === 'safe' ? 'Protected' : 'Unprotected'}</span>
+                </div>
+                ${fingerprintData.ipInfo ? `
+                <div class="fingerprint-item">
+                    <span class="name">ISP/Organization</span>
+                    <span class="value">${fingerprintData.ipInfo.org || 'Unknown'}</span>
+                    <span class="bits" style="background: ${fingerprintData.vpnDetection?.detected ? '#27ae60' : '#f39c12'}">${fingerprintData.vpnDetection?.detected ? 'VPN Provider' : 'ISP'}</span>
+                </div>
+                <div class="fingerprint-item">
+                    <span class="name">Location</span>
+                    <span class="value">${fingerprintData.ipInfo.city || 'Unknown'}, ${fingerprintData.ipInfo.country || 'Unknown'}</span>
+                    <span class="bits" style="background: #f39c12">Visible</span>
+                </div>
+                ` : ''}
+                ${fingerprintData.timezoneMismatch?.checked ? `
+                <div class="fingerprint-item">
+                    <span class="name">Timezone Check</span>
+                    <span class="value">${fingerprintData.timezoneMismatch.mismatch ? 'Mismatch detected' : 'Timezone matches IP location'}</span>
+                    <span class="bits" style="background: ${fingerprintData.timezoneMismatch.mismatch ? '#27ae60' : '#e74c3c'}">${fingerprintData.timezoneMismatch.mismatch ? 'VPN Likely' : 'Normal'}</span>
+                </div>
+                ` : ''}
+                <div class="fingerprint-item">
+                    <span class="name">WebRTC IPs</span>
+                    <span class="value">${fingerprintData.webrtcIPs || 'None detected'}</span>
+                    <span class="bits" style="background: ${fingerprintData.webrtcIPs === 'none detected' ? '#27ae60' : '#e74c3c'}">${fingerprintData.webrtcIPs === 'none detected' ? 'Hidden' : 'Exposed'}</span>
+                </div>
+                ${fingerprintData.webrtcLeak !== undefined ? `
+                <div class="fingerprint-item">
+                    <span class="name">WebRTC Leak Test</span>
+                    <span class="value">${fingerprintData.webrtcLeak ? 'IP mismatch - possible leak!' : 'No leak detected'}</span>
+                    <span class="bits" style="background: ${fingerprintData.webrtcLeak ? '#e74c3c' : '#27ae60'}">${fingerprintData.webrtcLeak ? 'Leak!' : 'Safe'}</span>
+                </div>
+                ` : ''}
+            `;
             
             // Display recommendations
             const recommendations = document.getElementById('recommendations');
